@@ -10,7 +10,7 @@ android {
         applicationId 'com.loader.app'
         minSdk 21
         // BlackBox лучше всего работает с targetSdk 28
-        targetSdk 28
+        targetSdk 34
         versionCode 1
         versionName '1.0'
 
@@ -41,8 +41,4 @@ android {
             useLegacyPackaging = true
         }
     }
-}
-
-dependencies {
-    implementation project(':Bcore')
 }
