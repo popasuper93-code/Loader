@@ -5,34 +5,49 @@ import android.animation.ObjectAnimator;
 import android.animation.PropertyValuesHolder;
 import android.animation.ValueAnimator;
 import android.app.Activity;
-import android.content.Intent;
+import android.app.Dialog;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
-import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
 import android.view.animation.DecelerateInterpolator;
+import android.widget.BaseAdapter;
+import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -40,9 +55,6 @@ import top.niunaijun.blackbox.BlackBoxCore;
 import top.niunaijun.blackbox.entity.pm.InstallResult;
 
 public class MainActivity extends Activity {
-
-    private static final int REQ_GAME = 101;
-    private static final int REQ_DISCORD = 102;
 
     // Палитра
     private static final int C_BG1 = 0xFF080B16;
@@ -61,9 +73,30 @@ public class MainActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
 
+    /** Выбранные пакеты (хранятся в файлах, см. App.F_GAME / App.F_DISCORD) */
+    private String gamePackage;
+    private String discordPackage;
+
     private TextView gameStatus, discordStatus, busyText;
     private View btnRunGame, btnRunDiscord;
     private View busyBox;
+
+    /** Элемент списка установленных приложений */
+    private static class AppItem {
+        final String label;
+        final String pkg;
+        final String apkPath;
+        final Drawable icon;
+        final boolean split;
+
+        AppItem(String label, String pkg, String apkPath, Drawable icon, boolean split) {
+            this.label = label;
+            this.pkg = pkg;
+            this.apkPath = apkPath;
+            this.icon = icon;
+            this.split = split;
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -125,8 +158,8 @@ public class MainActivity extends Activity {
         pulse.start();
 
         // ---------- Индикатор занятости ----------
-        busyBox = new LinearLayout(this);
-        LinearLayout busy = (LinearLayout) busyBox;
+        LinearLayout busy = new LinearLayout(this);
+        busyBox = busy;
         busy.setOrientation(LinearLayout.VERTICAL);
         ProgressBar bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         bar.setIndeterminate(true);
@@ -141,29 +174,29 @@ public class MainActivity extends Activity {
         col.addView(busy, busyLp);
 
         // ---------- Карточка: игра ----------
-        LinearLayout gameCard = newCard("Игра", "APK Oxide из памяти телефона", GAME_A, GAME_B);
+        LinearLayout gameCard = newCard("Игра", "Выберите установленную игру (Oxide)", GAME_A, GAME_B);
         gameStatus = text("", 13, true, C_MUTED);
-        addWithTop(gameCard, gameStatus, 14);
+        addWithTop(gameCard, gameStatus, 14, false);
         TextView btnAddGame = button("Добавить игру", GAME_A, GAME_B, false);
-        btnAddGame.setOnClickListener(v -> pick(REQ_GAME));
-        addWithTop(gameCard, btnAddGame, 14);
+        btnAddGame.setOnClickListener(v -> showAppPicker(true));
+        addWithTop(gameCard, btnAddGame, 14, true);
         TextView runGame = button("Запустить игру", GAME_A, GAME_B, true);
         runGame.setOnClickListener(v -> launch(true));
         btnRunGame = runGame;
-        addWithTop(gameCard, runGame, 10);
+        addWithTop(gameCard, runGame, 10, true);
         col.addView(gameCard);
 
         // ---------- Карточка: Discord ----------
-        LinearLayout discCard = newCard("Discord", "Обычный APK Discord (не XAPK)", DISC_A, DISC_B);
+        LinearLayout discCard = newCard("Discord", "Выберите установленный Discord", DISC_A, DISC_B);
         discordStatus = text("", 13, true, C_MUTED);
-        addWithTop(discCard, discordStatus, 14);
+        addWithTop(discCard, discordStatus, 14, false);
         TextView btnAddDiscord = button("Добавить Discord", DISC_A, DISC_B, false);
-        btnAddDiscord.setOnClickListener(v -> pick(REQ_DISCORD));
-        addWithTop(discCard, btnAddDiscord, 14);
+        btnAddDiscord.setOnClickListener(v -> showAppPicker(false));
+        addWithTop(discCard, btnAddDiscord, 14, true);
         TextView runDiscord = button("Запустить Discord", DISC_A, DISC_B, true);
         runDiscord.setOnClickListener(v -> launch(false));
         btnRunDiscord = runDiscord;
-        addWithTop(discCard, runDiscord, 10);
+        addWithTop(discCard, runDiscord, 10, true);
         col.addView(discCard);
 
         // ---------- Подвал ----------
@@ -196,74 +229,260 @@ public class MainActivity extends Activity {
     }
 
     // =====================================================================
-    // Выбор файла
+    // Выбор из установленных приложений (одна функция для игры и Discord)
     // =====================================================================
 
-    private void pick(int req) {
-        Intent i = new Intent(Intent.ACTION_GET_CONTENT);
-        i.setType("*/*");
-        i.addCategory(Intent.CATEGORY_OPENABLE);
-        i.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
-                "application/vnd.android.package-archive",
-                "application/octet-stream"});
+    private void showAppPicker(boolean game) {
+        setBusy(true, "Загружаю список приложений…");
+        io.execute(() -> {
+            List<AppItem> apps = loadInstalledApps();
+            ui.post(() -> {
+                setBusy(false, "");
+                if (isFinishing()) return;
+                if (apps.isEmpty()) {
+                    toast("Список приложений пуст");
+                    return;
+                }
+                openPickerDialog(apps, game);
+            });
+        });
+    }
+
+    /** getInstalledPackages(0) + только те, у которых есть иконка запуска (launcher). */
+    private List<AppItem> loadInstalledApps() {
+        List<AppItem> out = new ArrayList<>();
         try {
-            startActivityForResult(Intent.createChooser(i, "Выберите APK"), req);
+            PackageManager pm = getPackageManager();
+            List<PackageInfo> all = pm.getInstalledPackages(0);
+            for (PackageInfo pi : all) {
+                if (pi == null || pi.applicationInfo == null) continue;
+                if (pi.packageName.equals(getPackageName())) continue;
+                if (pm.getLaunchIntentForPackage(pi.packageName) == null) continue;
+
+                ApplicationInfo ai = pi.applicationInfo;
+                if (ai.sourceDir == null) continue;
+                boolean split = ai.splitSourceDirs != null && ai.splitSourceDirs.length > 0;
+                out.add(new AppItem(
+                        String.valueOf(ai.loadLabel(pm)),
+                        pi.packageName,
+                        ai.sourceDir,
+                        ai.loadIcon(pm),
+                        split));
+            }
         } catch (Throwable t) {
-            toast("Файловый менеджер не найден");
+            // вернём то, что успели собрать
+        }
+        Collections.sort(out, (a, b) -> a.label.compareToIgnoreCase(b.label));
+        return out;
+    }
+
+    private void openPickerDialog(List<AppItem> all, boolean game) {
+        final Dialog dlg = new Dialog(this);
+        dlg.requestWindowFeature(Window.FEATURE_NO_TITLE);
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), dp(18), dp(16), dp(12));
+        GradientDrawable bg = new GradientDrawable(
+                GradientDrawable.Orientation.TL_BR, new int[]{0xFF111933, 0xFF1A0F33});
+        bg.setCornerRadius(dp(24));
+        bg.setStroke(dp(1), C_STROKE);
+        box.setBackground(bg);
+
+        box.addView(text(game ? "Выберите игру" : "Выберите Discord", 20, true, C_TEXT));
+
+        EditText search = new EditText(this);
+        search.setHint("Поиск");
+        search.setHintTextColor(C_MUTED);
+        search.setTextColor(C_TEXT);
+        search.setTextSize(15);
+        search.setSingleLine(true);
+        search.setPadding(dp(14), dp(10), dp(14), dp(10));
+        GradientDrawable sb = new GradientDrawable();
+        sb.setColor(0xFF0C1224);
+        sb.setCornerRadius(dp(14));
+        sb.setStroke(dp(1), C_STROKE);
+        search.setBackground(sb);
+        LinearLayout.LayoutParams sp = lp(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        sp.topMargin = dp(12);
+        sp.bottomMargin = dp(8);
+        box.addView(search, sp);
+
+        final List<AppItem> shown = new ArrayList<>(all);
+        final AppAdapter adapter = new AppAdapter(shown);
+
+        ListView list = new ListView(this);
+        list.setAdapter(adapter);
+        list.setDivider(new ColorDrawable(0x00000000));
+        list.setDividerHeight(dp(2));
+        list.setVerticalScrollBarEnabled(false);
+        box.addView(list, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        list.setOnItemClickListener((parent, view, pos, id) -> {
+            AppItem it = shown.get(pos);
+            dlg.dismiss();
+            installFromInstalled(it, game);
+        });
+
+        search.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) { }
+
+            @Override
+            public void afterTextChanged(Editable e) {
+                String q = e.toString().trim().toLowerCase(Locale.ROOT);
+                shown.clear();
+                for (AppItem it : all) {
+                    if (q.isEmpty()
+                            || it.label.toLowerCase(Locale.ROOT).contains(q)
+                            || it.pkg.toLowerCase(Locale.ROOT).contains(q)) {
+                        shown.add(it);
+                    }
+                }
+                adapter.notifyDataSetChanged();
+            }
+        });
+
+        dlg.setContentView(box);
+        dlg.show();
+
+        Window w = dlg.getWindow();
+        if (w != null) {
+            w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            int h = (int) (getResources().getDisplayMetrics().heightPixels * 0.8f);
+            int wd = (int) (getResources().getDisplayMetrics().widthPixels * 0.92f);
+            w.setLayout(wd, h);
         }
     }
 
-    @Override
-    protected void onActivityResult(int req, int res, Intent data) {
-        super.onActivityResult(req, res, data);
-        if (res != RESULT_OK || data == null || data.getData() == null) return;
-        if (req == REQ_GAME) install(data.getData(), true);
-        else if (req == REQ_DISCORD) install(data.getData(), false);
+    private class AppAdapter extends BaseAdapter {
+        private final List<AppItem> data;
+
+        AppAdapter(List<AppItem> data) {
+            this.data = data;
+        }
+
+        @Override public int getCount() { return data.size(); }
+        @Override public Object getItem(int i) { return data.get(i); }
+        @Override public long getItemId(int i) { return i; }
+
+        @Override
+        public View getView(int i, View convert, ViewGroup parent) {
+            LinearLayout row;
+            ImageView icon;
+            TextView name, pkg;
+
+            if (convert == null) {
+                row = new LinearLayout(MainActivity.this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setPadding(dp(10), dp(10), dp(10), dp(10));
+
+                GradientDrawable base = new GradientDrawable();
+                base.setColor(0x00000000);
+                base.setCornerRadius(dp(14));
+                GradientDrawable mask = new GradientDrawable();
+                mask.setColor(Color.WHITE);
+                mask.setCornerRadius(dp(14));
+                row.setBackground(new RippleDrawable(
+                        ColorStateList.valueOf(0x33FFFFFF), base, mask));
+
+                icon = new ImageView(MainActivity.this);
+                icon.setId(1);
+                row.addView(icon, new LinearLayout.LayoutParams(dp(44), dp(44)));
+
+                LinearLayout texts = new LinearLayout(MainActivity.this);
+                texts.setOrientation(LinearLayout.VERTICAL);
+                LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+                tl.leftMargin = dp(12);
+
+                name = text("", 16, true, C_TEXT);
+                name.setId(2);
+                name.setSingleLine(true);
+                pkg = text("", 12, false, C_MUTED);
+                pkg.setId(3);
+                pkg.setSingleLine(true);
+                texts.addView(name);
+                texts.addView(pkg);
+                row.addView(texts, tl);
+            } else {
+                row = (LinearLayout) convert;
+                icon = row.findViewById(1);
+                name = row.findViewById(2);
+                pkg = row.findViewById(3);
+            }
+
+            AppItem it = data.get(i);
+            icon.setImageDrawable(it.icon);
+            name.setText(it.label);
+            pkg.setText(it.split ? it.pkg + " · split" : it.pkg);
+            return row;
+        }
     }
 
     // =====================================================================
-    // Установка в BlackBox
+    // Копирование APK (sourceDir) и установка в BlackBox
     // =====================================================================
 
-    private void install(Uri uri, boolean game) {
+    private void installFromInstalled(AppItem it, boolean game) {
         setBusy(true, "Копирую APK…");
         io.execute(() -> {
-            String err = installBlocking(uri, game);
+            String err = installBlocking(it, game);
             ui.post(() -> {
                 setBusy(false, "");
                 refreshState();
-                toast(err == null ? "Готово: добавлено в BlackBox" : err);
+                if (err != null) {
+                    toast(err);
+                } else if (it.split) {
+                    toast("Добавлено, но у приложения split-APK: если не запустится, поставьте обычный APK");
+                } else {
+                    toast("Готово: добавлено в BlackBox");
+                }
             });
         });
     }
 
     /** Возвращает null при успехе или текст ошибки. */
-    private String installBlocking(Uri uri, boolean game) {
+    private String installBlocking(AppItem it, boolean game) {
         try {
             File dir = new File(getFilesDir(), "apks");
             if (!dir.exists() && !dir.mkdirs()) return "Не удалось создать папку";
             File out = new File(dir, game ? "game.apk" : "discord.apk");
 
-            InputStream in = getContentResolver().openInputStream(uri);
-            if (in == null) return "Не удалось открыть файл";
-            try (InputStream is = in; OutputStream os = new FileOutputStream(out)) {
+            // sourceDir -> внутренняя папка
+            try (InputStream is = new FileInputStream(it.apkPath);
+                 OutputStream os = new FileOutputStream(out)) {
                 byte[] buf = new byte[256 * 1024];
                 int n;
                 while ((n = is.read(buf)) > 0) os.write(buf, 0, n);
             }
 
-            PackageInfo pi = getPackageManager().getPackageArchiveInfo(out.getAbsolutePath(), 0);
-            if (pi == null || pi.packageName == null) {
-                return "Это не APK (XAPK/APKS/split не поддерживаются)";
-            }
-
             ui.post(() -> setBusy(true, "Устанавливаю в BlackBox…"));
             InstallResult r = BlackBoxCore.get().installPackageAsUser(out, App.USER_ID);
+
+            if (r == null || !r.success) {
+                // запасной путь: установка по имени пакета, уже стоящего на телефоне
+                try {
+                    r = BlackBoxCore.get().installPackageAsUser(it.pkg, App.USER_ID);
+                } catch (Throwable ignored) {
+                    // оставляем результат первой попытки
+                }
+            }
             if (r == null || !r.success) {
                 return "Ошибка установки: " + (r == null ? "нет ответа" : r.msg);
             }
 
-            App.writePref(game ? App.F_GAME : App.F_DISCORD, pi.packageName);
+            // Для игры и Discord — разные переменные/файлы
+            if (game) {
+                gamePackage = it.pkg;
+                App.writePref(App.F_GAME, it.pkg);
+            } else {
+                discordPackage = it.pkg;
+                App.writePref(App.F_DISCORD, it.pkg);
+            }
             return null;
         } catch (Throwable t) {
             return "Ошибка: " + t;
@@ -275,7 +494,7 @@ public class MainActivity extends Activity {
     // =====================================================================
 
     private void launch(boolean game) {
-        String pkg = App.readPref(game ? App.F_GAME : App.F_DISCORD);
+        String pkg = game ? gamePackage : discordPackage;
         if (pkg == null) {
             toast(game ? "Сначала добавьте игру" : "Сначала добавьте Discord");
             return;
@@ -296,8 +515,10 @@ public class MainActivity extends Activity {
     // =====================================================================
 
     private void refreshState() {
-        bindStatus(gameStatus, btnRunGame, App.readPref(App.F_GAME));
-        bindStatus(discordStatus, btnRunDiscord, App.readPref(App.F_DISCORD));
+        gamePackage = App.readPref(App.F_GAME);
+        discordPackage = App.readPref(App.F_DISCORD);
+        bindStatus(gameStatus, btnRunGame, gamePackage);
+        bindStatus(discordStatus, btnRunDiscord, discordPackage);
     }
 
     private void bindStatus(TextView st, View run, String pkg) {
@@ -342,10 +563,9 @@ public class MainActivity extends Activity {
         return t;
     }
 
-    private void addWithTop(LinearLayout parent, View child, int topDp) {
+    private void addWithTop(LinearLayout parent, View child, int topDp, boolean isButton) {
         LinearLayout.LayoutParams p = lp(ViewGroup.LayoutParams.MATCH_PARENT,
-                child instanceof TextView && child.isClickable() ? dp(54)
-                        : ViewGroup.LayoutParams.WRAP_CONTENT);
+                isButton ? dp(54) : ViewGroup.LayoutParams.WRAP_CONTENT);
         p.topMargin = dp(topDp);
         parent.addView(child, p);
     }
