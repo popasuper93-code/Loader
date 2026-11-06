@@ -41,23 +41,67 @@ jobs:
           rm -rf engine/app
           cp -r loader/app engine/app
 
-      # 4. Диагностика: показываем сигнатуры API, с которыми компилируемся
-      - name: Print BlackBox API (debug)
+      # 4. Проверка, что все нужные файлы на месте
+      - name: Check project files
         run: |
-          CORE=engine/Bcore/src/main/java/top/niunaijun/blackbox
-          grep -n "installPackageAsUser\|launchApk\|addAppLifecycleCallback\|doAttachBaseContext" $CORE/BlackBoxCore.java || true
-          echo "----- AppLifecycleCallback -----"
-          cat $CORE/app/configuration/AppLifecycleCallback.java || true
-          echo "----- InstallResult -----"
-          cat $CORE/entity/pm/InstallResult.java || true
-          echo "----- libs in app -----"
+          echo "---- res ----"
+          find engine/app/src/main/res -type f 2>/dev/null | sort || true
+          echo "---- java ----"
+          find engine/app/src/main/java -type f 2>/dev/null | sort || true
+          echo "---- jniLibs ----"
           find engine/app/src/main/jniLibs -type f 2>/dev/null || echo "jniLibs: пусто (плагин не добавлен)"
+          for f in \
+            app/build.gradle \
+            app/src/main/AndroidManifest.xml \
+            app/src/main/java/com/loader/app/App.java \
+            app/src/main/java/com/loader/app/MainActivity.java \
+            app/src/main/res/mipmap-nodpi/ic_launcher.png \
+            app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml \
+            app/src/main/res/drawable-nodpi/ic_launcher_fg.png \
+            app/src/main/res/drawable/ic_launcher_bg.xml
+          do
+            if [ -f "engine/$f" ]; then echo "OK      $f"; else echo "::error::НЕТ ФАЙЛА: $f"; fi
+          done
 
+      # 5. Сборка (весь вывод сохраняем в build.log)
       - name: Build debug APK
         working-directory: engine
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleDebug --no-daemon --stacktrace
+          set -o pipefail
+          ./gradlew :app:assembleDebug --no-daemon --stacktrace 2>&1 | tee ../build.log
+
+      # 6. При падении — выжимка ошибок на странице запуска (Summary) и в аннотациях
+      - name: Show build errors
+        if: failure()
+        run: |
+          if [ -f build.log ]; then
+            {
+              echo "## Ошибки сборки"
+              echo '```'
+              echo "--- Java-ошибки ---"
+              grep -E "\.java:[0-9]+: error" -A 3 build.log | head -60 || true
+              echo "--- Gradle: что пошло не так ---"
+              sed -n '/FAILURE: Build failed/,/\* Try:/p' build.log | head -60
+              echo "--- Ресурсы / манифест ---"
+              grep -i -E "AAPT|Manifest merger|resource .* not found|error: " build.log | head -30 || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            sed -n '/What went wrong/,/\* Try:/p' build.log | head -12 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            grep -E "\.java:[0-9]+: error" build.log | head -10 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+          fi
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
