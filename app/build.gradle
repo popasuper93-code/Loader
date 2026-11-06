@@ -42,6 +42,7 @@ android {
         }
     }
 }
+
 dependencies {
-    implementation project(':engine:Bcore')
+    implementation project(':Bcore')
 }
