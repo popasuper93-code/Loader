@@ -1,0 +1,48 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.loader.app'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.loader.app'
+        minSdk 21
+        // BlackBox лучше всего работает с targetSdk 28
+        targetSdk 28
+        versionCode 1
+        versionName '1.0'
+
+        // Только 64-бит: плагин лежит в lib/arm64-v8a
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+        }
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+
+    // .so должны лежать на диске (нужно для System.loadLibrary внутри процесса игры)
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+}
+
+dependencies {
+    implementation project(':Bcore')
+}
