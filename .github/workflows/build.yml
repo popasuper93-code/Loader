@@ -1,8 +1,8 @@
 name: Build Loader APK
 
+# Сборка запускается ВРУЧНУЮ: Actions -> Build Loader APK -> Run workflow.
+# Так она не падает на каждом промежуточном коммите, пока вы загружаете файлы по одному.
 on:
-  push:
-    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -41,6 +41,35 @@ jobs:
           rm -rf engine/app
           cp -r loader/app engine/app
 
+      # 3.1. Иконка: если загружены не все 4 файла — собираем со стандартной иконкой,
+      #      чтобы сборка не падала. Когда загрузите все файлы, иконка подхватится сама.
+      - name: Check icon files
+        run: |
+          RES=engine/app/src/main/res
+          ALL_OK=1
+          for f in \
+            mipmap-nodpi/ic_launcher.png \
+            mipmap-anydpi-v26/ic_launcher.xml \
+            drawable-nodpi/ic_launcher_fg.png \
+            drawable/ic_launcher_bg.xml
+          do
+            if [ ! -f "$RES/$f" ]; then
+              echo "::warning::Нет файла иконки: res/$f"
+              ALL_OK=0
+            fi
+          done
+          if [ "$ALL_OK" = "1" ]; then
+            echo "Иконка ChadLouder: все 4 файла на месте"
+          else
+            echo "⚠ Иконка неполная — собираю со стандартной иконкой Android"
+            rm -f "$RES/mipmap-nodpi/ic_launcher.png" \
+                  "$RES/mipmap-anydpi-v26/ic_launcher.xml" \
+                  "$RES/drawable-nodpi/ic_launcher_fg.png" \
+                  "$RES/drawable/ic_launcher_bg.xml"
+            sed -i 's#@mipmap/ic_launcher#@android:drawable/sym_def_app_icon#' \
+              engine/app/src/main/AndroidManifest.xml
+          fi
+
       # 4. Проверка, что все нужные файлы на месте
       - name: Check project files
         run: |
@@ -54,45 +83,44 @@ jobs:
             app/build.gradle \
             app/src/main/AndroidManifest.xml \
             app/src/main/java/com/loader/app/App.java \
-            app/src/main/java/com/loader/app/MainActivity.java \
-            app/src/main/res/mipmap-nodpi/ic_launcher.png \
-            app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml \
-            app/src/main/res/drawable-nodpi/ic_launcher_fg.png \
-            app/src/main/res/drawable/ic_launcher_bg.xml
+            app/src/main/java/com/loader/app/MainActivity.java
           do
             if [ -f "engine/$f" ]; then echo "OK      $f"; else echo "::error::НЕТ ФАЙЛА: $f"; fi
           done
+          echo "---- App.java: версия ----"
+          grep -c "GAME_PKG" engine/app/src/main/java/com/loader/app/App.java \
+            && echo "App.java НОВЫЙ (есть GAME_PKG)" \
+            || echo "::error::App.java СТАРЫЙ — замените его новой версией"
 
-      # 5. Сборка (весь вывод сохраняем в build.log)
+      # 5. Сборка. В консоль идёт только короткий вывод (без шума про манифест),
+      #    полный лог сохраняется в build.log
       - name: Build debug APK
         working-directory: engine
         run: |
           chmod +x gradlew
-          set -o pipefail
-          ./gradlew :app:assembleDebug --no-daemon --stacktrace 2>&1 | tee ../build.log
+          set +e
+          ./gradlew :app:assembleDebug --no-daemon --console=plain --warning-mode none 2>&1 \
+            | tee ../build.log \
+            | grep -v -E "^> Task|duplicated with element|Warning:$"
+          code=${PIPESTATUS[0]}
+          exit $code
 
-      # 6. При падении — выжимка ошибок на странице запуска (Summary) и в аннотациях
+      # 6. При падении — выжимка ошибок: в консоль, в Summary и в аннотации
       - name: Show build errors
         if: failure()
         run: |
           if [ -f build.log ]; then
+            echo "=============== ОШИБКИ КОМПИЛЯЦИИ JAVA ==============="
+            grep -E "\.java:[0-9]+: error" -A 2 build.log | head -60 || true
+            echo "=============== GRADLE: ЧТО ПОШЛО НЕ ТАК ==============="
+            sed -n '/What went wrong/,/\* Try:/p' build.log | head -40
             {
               echo "## Ошибки сборки"
               echo '```'
-              echo "--- Java-ошибки ---"
-              grep -E "\.java:[0-9]+: error" -A 3 build.log | head -60 || true
-              echo "--- Gradle: что пошло не так ---"
-              sed -n '/FAILURE: Build failed/,/\* Try:/p' build.log | head -60
-              echo "--- Ресурсы / манифест ---"
-              grep -i -E "AAPT|Manifest merger|resource .* not found|error: " build.log | head -30 || true
+              grep -E "\.java:[0-9]+: error" -A 2 build.log | head -60 || true
+              sed -n '/What went wrong/,/\* Try:/p' build.log | head -40
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
-            sed -n '/What went wrong/,/\* Try:/p' build.log | head -12 | while IFS= read -r line; do
-              echo "::error::$line"
-            done
-            grep -E "\.java:[0-9]+: error" build.log | head -10 | while IFS= read -r line; do
-              echo "::error::$line"
-            done
           fi
 
       - name: Upload build log
