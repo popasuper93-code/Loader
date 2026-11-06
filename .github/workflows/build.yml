@@ -1,8 +1,10 @@
 name: Build Loader APK
 
-# Сборка запускается ВРУЧНУЮ: Actions -> Build Loader APK -> Run workflow.
-# Так она не падает на каждом промежуточном коммите, пока вы загружаете файлы по одному.
+# Сборка запускается автоматически при каждом коммите в main/master
+# и вручную (Actions -> Build Loader APK -> Run workflow).
 on:
+  push:
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
