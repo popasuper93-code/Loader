@@ -94,6 +94,17 @@ jobs:
             && echo "App.java НОВЫЙ (есть GAME_PKG)" \
             || echo "::error::App.java СТАРЫЙ — замените его новой версией"
 
+      # 4.1. Разведка по split-APK: смотрим, что в самом движке BlackBox
+      #      написано про сплиты. Ни на что не влияет, только для диагностики.
+      - name: Inspect split APK support in BlackBox engine
+        run: |
+          PM=engine/Bcore/src/main/java/top/niunaijun/blackbox/core/system/pm
+          PE=engine/Bcore/src/main/java/top/niunaijun/blackbox/entity/pm
+          echo "---- InstallOption.java (флаги установки) ----"
+          cat "$PE/InstallOption.java" 2>/dev/null || echo "файл не найден"
+          echo "---- упоминания 'split' в pm/ ----"
+          grep -rin "split" "$PM" "$PE" 2>/dev/null || echo "совпадений нет — похоже, движок split-APK не разбирает"
+
       # 5. Сборка. В консоль идёт только короткий вывод (без шума про манифест),
       #    полный лог сохраняется в build.log
       - name: Build debug APK
