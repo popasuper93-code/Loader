@@ -15,7 +15,10 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
@@ -32,12 +35,13 @@ import android.text.TextWatcher;
 import android.text.style.ForegroundColorSpan;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.SoundEffectConstants;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.animation.AlphaAnimation;
-import android.view.animation.Animation;
-import android.view.animation.ScaleAnimation;
+import android.view.animation.DecelerateInterpolator;
+import android.view.animation.OvershootInterpolator;
 import android.widget.BaseAdapter;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -105,7 +109,7 @@ public class MainActivity extends Activity {
 
     // Ссылки на текущие view
     private final View[] pages = new View[3];
-    private final TextView[] tabIcons = new TextView[3];
+    private final IconView[] tabIconViews = new IconView[3];
     private final TextView[] tabLabels = new TextView[3];
     private TextView gameStatus, discordStatus, busyText, logView;
     private View btnRunGame, btnRunDiscord, busyBox;
@@ -131,6 +135,88 @@ public class MainActivity extends Activity {
 
     private interface BoolCb {
         void onChange(boolean value);
+    }
+
+    /**
+     * Своя нарисованная иконка (без эмодзи, чтобы все три вкладки были
+     * ровно одного размера и не «съезжали»): геймпад, шестерёнка, список.
+     */
+    private static class IconView extends View {
+        private final int type; // 0 = геймпад, 1 = настройки, 2 = логи
+        private int color = Color.WHITE;
+        private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path path = new Path();
+
+        IconView(Context c, int type) {
+            super(c);
+            this.type = type;
+            stroke.setStyle(Paint.Style.STROKE);
+            stroke.setStrokeCap(Paint.Cap.ROUND);
+            stroke.setStrokeJoin(Paint.Join.ROUND);
+            fill.setStyle(Paint.Style.FILL);
+        }
+
+        void setIconColor(int c) {
+            color = c;
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(Canvas c) {
+            float w = getWidth(), h = getHeight();
+            if (w <= 0 || h <= 0) return;
+            float s = Math.min(w, h);
+            stroke.setColor(color);
+            fill.setColor(color);
+            stroke.setStrokeWidth(s * 0.1f);
+            c.save();
+            c.translate(w / 2f, h / 2f);
+            switch (type) {
+                case 0: drawGamepad(c, s); break;
+                case 1: drawGear(c, s); break;
+                default: drawLogs(c, s); break;
+            }
+            c.restore();
+        }
+
+        private void drawGamepad(Canvas c, float s) {
+            float bw = s * 0.42f, bh = s * 0.26f;
+            path.reset();
+            path.addRoundRect(-bw, -bh, bw, bh, bh, bh, Path.Direction.CW);
+            c.drawPath(path, stroke);
+            // крестовина d-pad слева
+            float cx = -bw * 0.48f, cy = 0, arm = bh * 0.34f;
+            c.drawLine(cx - arm, cy, cx + arm, cy, stroke);
+            c.drawLine(cx, cy - arm, cx, cy + arm, stroke);
+            // две кнопки справа
+            float r = bh * 0.16f;
+            c.drawCircle(bw * 0.40f, -bh * 0.22f, r, fill);
+            c.drawCircle(bw * 0.58f, bh * 0.05f, r, fill);
+        }
+
+        private void drawGear(Canvas c, float s) {
+            float r = s * 0.26f;
+            c.drawCircle(0, 0, r, stroke);
+            c.drawCircle(0, 0, r * 0.38f, stroke);
+            float toothLen = s * 0.14f, toothW = s * 0.085f;
+            for (int i = 0; i < 6; i++) {
+                c.save();
+                c.rotate(i * 60f);
+                c.drawRoundRect(-toothW / 2f, -(r + toothLen), toothW / 2f, -r,
+                        toothW / 3f, toothW / 3f, fill);
+                c.restore();
+            }
+        }
+
+        private void drawLogs(Canvas c, float s) {
+            float w = s * 0.46f, gap = s * 0.22f;
+            for (int i = -1; i <= 1; i++) {
+                float y = i * gap;
+                float len = (i == 0) ? w : w * 0.72f;
+                c.drawLine(-len, y, len, y, stroke);
+            }
+        }
     }
 
     // =====================================================================
@@ -226,8 +312,10 @@ public class MainActivity extends Activity {
         applySystemBars();
 
         FrameLayout root = new FrameLayout(this);
+        // Фон в три цвета, как в первой версии лоудера (глубокий фиолетовый TL->BR)
+        int cMid = dark ? 0xFF12122B : 0xFFEFF1FB;
         root.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                new int[]{cBg1, cBg2}));
+                new int[]{cBg1, cMid, cBg2}));
 
         LinearLayout main = new LinearLayout(this);
         main.setOrientation(LinearLayout.VERTICAL);
@@ -255,7 +343,6 @@ public class MainActivity extends Activity {
         bg.setStroke(dp(1), cStroke);
         bar.setBackground(bg);
 
-        String[] icons = {"🎮", "⚙", "☰"};
         String[] labels = {"Игры", "Настройки", "Логи"};
         for (int i = 0; i < 3; i++) {
             final int idx = i;
@@ -263,28 +350,52 @@ public class MainActivity extends Activity {
             tab.setOrientation(LinearLayout.VERTICAL);
             tab.setGravity(Gravity.CENTER);
             tab.setClickable(true);
+            tab.setSoundEffectsEnabled(true);
             tab.setBackground(new RippleDrawable(ColorStateList.valueOf(0x22FFFFFF),
                     new ColorDrawable(0), new ColorDrawable(Color.WHITE)));
 
-            tabIcons[i] = text(icons[i], 20, false, cMuted);
+            IconView icon = new IconView(this, i);
+            tabIconViews[i] = icon;
+            LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(dp(24), dp(24));
+            ilp.bottomMargin = dp(3);
+            tab.addView(icon, ilp);
+
             tabLabels[i] = text(labels[i], 11, true, cMuted);
-            tab.addView(tabIcons[i]);
             tab.addView(tabLabels[i]);
-            tab.setOnClickListener(v -> selectTab(idx, true));
+            tab.setOnClickListener(v -> {
+                if (idx != curTab) v.playSoundEffect(SoundEffectConstants.CLICK);
+                selectTab(idx, true);
+            });
             bar.addView(tab, new LinearLayout.LayoutParams(0, MATCH, 1f));
         }
         return bar;
     }
 
     private void selectTab(int idx, boolean animate) {
+        int prev = curTab;
         curTab = idx;
         for (int i = 0; i < 3; i++) {
             boolean sel = (i == idx);
-            pages[i].setVisibility(sel ? View.VISIBLE : View.GONE);
-            tabIcons[i].setTextColor(sel ? accA : cMuted);
+            tabIconViews[i].setIconColor(sel ? accA : cMuted);
             tabLabels[i].setTextColor(sel ? accA : cMuted);
         }
-        if (animate) fadeIn(pages[idx], 0, 250);
+
+        if (animate && prev != idx) {
+            View v = pages[prev];
+            v.animate().cancel();
+            v.animate().alpha(0f).setDuration(120)
+                    .withEndAction(() -> v.setVisibility(View.GONE)).start();
+
+            View nv = pages[idx];
+            nv.animate().cancel();
+            nv.setAlpha(0f);
+            nv.setTranslationY(dp(14) * (idx > prev ? 1 : -1));
+            nv.setVisibility(View.VISIBLE);
+            nv.animate().alpha(1f).translationY(0f).setDuration(260)
+                    .setInterpolator(new DecelerateInterpolator()).start();
+        } else {
+            for (int i = 0; i < 3; i++) pages[i].setVisibility(i == idx ? View.VISIBLE : View.GONE);
+        }
         if (idx == 2) refreshLogs();
     }
 
@@ -536,8 +647,14 @@ public class MainActivity extends Activity {
         if (t.isEmpty()) t = "(лог пуст)";
         if (t.equals(lastLogText)) return;
         lastLogText = t;
+
+        // Автопрокрутка только если пользователь и так был внизу —
+        // иначе обновление лога не дёргает экран, пока он читает выше.
+        boolean wasAtBottom = !logScroll.canScrollVertically(1);
         logView.setText(colorize(t));
-        logScroll.post(() -> logScroll.fullScroll(View.FOCUS_DOWN));
+        if (wasAtBottom) {
+            logScroll.post(() -> logScroll.fullScroll(View.FOCUS_DOWN));
+        }
     }
 
     private CharSequence colorize(String s) {
@@ -881,8 +998,7 @@ public class MainActivity extends Activity {
                 if (err != null) {
                     toast(err);
                 } else if (it.splitCount > 0) {
-                    toast("Добавлено, но у приложения split-APK (×" + it.splitCount
-                            + "): может не запуститься");
+                    toast("Готово: добавлено в BlackBox (подробности — во вкладке «Логи»)");
                 } else {
                     toast("Готово: добавлено в BlackBox");
                 }
@@ -894,51 +1010,55 @@ public class MainActivity extends Activity {
     private String installBlocking(AppItem it, boolean game) {
         final String need = game ? App.GAME_PKG : App.DISCORD_PKG;
         final String name = game ? "game" : "discord";
+
+        // Анти-кряк: пакет it.pkg получен из getInstalledPackages() (системная,
+        // неподделываемая информация), поэтому сверяем его напрямую.
+        if (!need.equals(it.pkg)) {
+            App.log("ОШИБКА: выбран чужой пакет " + it.pkg + ", нужен " + need);
+            return "Неверный пакет: " + it.pkg + "\nНужен: " + need;
+        }
+
         try {
-            App.log("Добавление " + it.pkg + " из " + it.apkPath
-                    + (it.splitCount > 0 ? " (split-частей: " + it.splitCount + ")" : ""));
+            boolean hasSplits = it.splitCount > 0;
+            App.log("Добавление " + it.pkg
+                    + (hasSplits ? " (split-частей: " + it.splitCount + ")" : ""));
 
-            File dir = new File(getFilesDir(), "apks");
-            if (!dir.exists() && !dir.mkdirs()) return "Не удалось создать папку";
-            File tmp = new File(dir, name + ".tmp");
-
-            try (InputStream is = new FileInputStream(it.apkPath);
-                 OutputStream os = new FileOutputStream(tmp)) {
-                byte[] buf = new byte[256 * 1024];
-                int n;
-                while ((n = is.read(buf)) > 0) os.write(buf, 0, n);
+            // 1) Сначала пробуем установить ПО ИМЕНИ ПАКЕТА: BlackBox сам
+            //    забирает приложение с устройства вместе со всеми его частями,
+            //    так как ему отдают не один файл, а уже установленное приложение.
+            //    Для игр и приложений со split-APK (Unity-данные, arm64-библиотеки
+            //    и т.д.) это единственный способ не потерять часть файлов.
+            InstallResult r = null;
+            try {
+                App.log("Пробую установить по имени пакета (подхватит все части, если умеет)…");
+                r = BlackBoxCore.get().installPackageAsUser(it.pkg, App.USER_ID);
+            } catch (Throwable t) {
+                App.log("Установка по имени не удалась: " + t);
             }
+            boolean byName = (r != null && r.success);
+            if (byName) {
+                App.log("✔ Установлено по имени пакета" + (hasSplits ? " — split-части должны быть внутри" : ""));
+            } else {
+                App.log("Установка по имени не удалась (" + (r == null ? "нет ответа" : r.msg)
+                        + ") — пробую резервный способ: копирование base.apk"
+                        + (hasSplits ? " (ВНИМАНИЕ: остальные split-части при этом потеряются)" : ""));
 
-            // Анти-кряк: пакет читаем из самого APK
-            PackageInfo pi = getPackageManager().getPackageArchiveInfo(tmp.getAbsolutePath(), 0);
-            if (pi == null || pi.packageName == null) {
-                tmp.delete();
-                App.log("ОШИБКА: не удалось прочитать APK " + it.apkPath);
-                return "Не удалось прочитать APK";
-            }
-            if (!need.equals(pi.packageName)) {
-                tmp.delete();
-                App.log("ОШИБКА: неверный пакет " + pi.packageName + ", нужен " + need);
-                return "Неверный пакет: " + pi.packageName + "\nНужен: " + need;
-            }
+                File dir = new File(getFilesDir(), "apks");
+                if (!dir.exists() && !dir.mkdirs()) return "Не удалось создать папку";
+                File out = new File(dir, name + ".apk");
 
-            File out = new File(dir, name + ".apk");
-            if (out.exists() && !out.delete()) return "Не удалось заменить старый APK";
-            if (!tmp.renameTo(out)) return "Не удалось сохранить APK";
-            App.log("APK скопирован: " + out.getAbsolutePath() + " (" + (out.length() >> 10) + " КБ)");
-
-            ui.post(() -> setBusy(true, "Устанавливаю в BlackBox…"));
-            InstallResult r = BlackBoxCore.get().installPackageAsUser(out, App.USER_ID);
-
-            if (r == null || !r.success) {
-                App.log("Установка из файла не удалась: " + (r == null ? "нет ответа" : r.msg)
-                        + " — пробую по имени пакета");
-                try {
-                    r = BlackBoxCore.get().installPackageAsUser(it.pkg, App.USER_ID);
-                } catch (Throwable ignored) {
-                    // оставляем результат первой попытки
+                try (InputStream is = new FileInputStream(it.apkPath);
+                     OutputStream os = new FileOutputStream(out)) {
+                    byte[] buf = new byte[256 * 1024];
+                    int n;
+                    while ((n = is.read(buf)) > 0) os.write(buf, 0, n);
                 }
+                App.log("base.apk скопирован: " + out.getAbsolutePath() + " (" + (out.length() >> 10) + " КБ)");
+
+                ui.post(() -> setBusy(true, "Устанавливаю в BlackBox…"));
+                r = BlackBoxCore.get().installPackageAsUser(out, App.USER_ID);
             }
+
             if (r == null || !r.success) {
                 String m = r == null ? "нет ответа" : String.valueOf(r.msg);
                 App.log("ОШИБКА установки: " + m);
@@ -1191,16 +1311,18 @@ public class MainActivity extends Activity {
         mask.setColor(Color.WHITE);
         mask.setCornerRadius(dp(16));
         b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x44FFFFFF), base, mask));
+        b.setSoundEffectsEnabled(false); // звук играем сами, один раз на ACTION_DOWN
 
-        // Плавное нажатие через ScaleAnimation
+        // Плавное нажатие (плавный «утоп» вниз и пружинка обратно) + звук клика
         b.setOnTouchListener((v, e) -> {
             switch (e.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
-                    scale(v, 1f, 0.95f, 100);
+                    v.playSoundEffect(SoundEffectConstants.CLICK);
+                    pressAnim(v, 0.95f, 90, null);
                     break;
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
-                    scale(v, 0.95f, 1f, 140);
+                    pressAnim(v, 1f, 220, new OvershootInterpolator(3.5f));
                     break;
                 default:
                     break;
@@ -1210,12 +1332,11 @@ public class MainActivity extends Activity {
         return b;
     }
 
-    private void scale(View v, float from, float to, long ms) {
-        ScaleAnimation a = new ScaleAnimation(from, to, from, to,
-                Animation.RELATIVE_TO_SELF, 0.5f, Animation.RELATIVE_TO_SELF, 0.5f);
-        a.setDuration(ms);
-        a.setFillAfter(true);
-        v.startAnimation(a);
+    /** Плавная анимация масштаба кнопки через ObjectAnimator (без рывков ScaleAnimation). */
+    private void pressAnim(View v, float to, long ms, android.view.animation.Interpolator interp) {
+        v.animate().cancel();
+        v.animate().scaleX(to).scaleY(to).setDuration(ms)
+                .setInterpolator(interp).start();
     }
 
     /** Плавное появление (Fade In). */
